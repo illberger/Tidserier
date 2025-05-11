@@ -55,7 +55,8 @@ class ModelManager:
                 new_close = X_unscaled[-1, CLOSE_IDX]
                 y_true = np.array([[new_close / prev_close - 1]], dtype=np.float32)
                 X_batch = self.last_X_scaled[np.newaxis, ...]
-                self.model.train_on_batch(X_batch, y_true)
+                # Note that this SHOULD work since the model is already compiled before serialized
+                self.model.train_on_batch(X_batch, y_true) # Note that this also RETURNS a loss
         self.last_X_scaled = X_scaled.copy()
         self.last_X_unscaled = X_unscaled.copy()
 
