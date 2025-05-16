@@ -1,4 +1,5 @@
 # model_manager.py
+from collections import deque
 
 import tensorflow as tf
 import numpy as np
@@ -37,6 +38,9 @@ class ModelManager:
         self.model = model
         self.last_X_scaled = None
         self.last_X_unscaled = None
+        self.replay = deque(maxlen=10)
+        self.lr = lr
+        self.optimizer = tf.keras.optimizers.Adam(learning_rate=lr)
 
     def predict_close(self, X_scaled: np.ndarray, X_unscaled: np.ndarray):
         """
@@ -54,9 +58,11 @@ class ModelManager:
                 prev_close = self.last_X_unscaled[-1, CLOSE_IDX]
                 new_close = X_unscaled[-1, CLOSE_IDX]
                 y_true = np.array([[new_close / prev_close - 1]], dtype=np.float32)
-                X_batch = self.last_X_scaled[np.newaxis, ...]
+                x_batch = self.last_X_scaled[np.newaxis, ...]
+
                 # Note that this SHOULD work since the model is already compiled before serialized
-                self.model.train_on_batch(X_batch, y_true) # Note that this also RETURNS a loss
+                batch_loss = self.online_update(x_batch, y_true)
+                print(f"Batch loss: {batch_loss}")
         self.last_X_scaled = X_scaled.copy()
         self.last_X_unscaled = X_unscaled.copy()
 
@@ -65,6 +71,44 @@ class ModelManager:
         last_close = X_unscaled[-1, CLOSE_IDX]
         pred_close: float = last_close * (1 + y_pct_hat[0])
         return y_pct_hat, pred_close
+
+    def online_update(self, X_batch, y_true):
+        #
+        """
+        TODO:
+        y_true targets the close price of the features
+        X_batch is 1 batch, seq_len is 288, n_Features is 6 (2 for time)
+        :param model: keras model instance
+        :param optimizer: keras optimizer instance
+        :param X_batch: shape (1, seq_len, n_features);
+        :param y_true: (1, 1);
+        :return: Loss for this batch (for statistics or further computing)
+        """
+
+        self.replay.append((X_batch, y_true))
+        batch_x = np.vstack([xb for xb, _ in self.replay])  # shape (k, seq_len, n_feat)
+        batch_y = np.vstack([yt for _, yt in self.replay])  # shape (k, 1)
+
+        loss_fn = tf.keras.losses.MeanSquaredError()
+        with tf.GradientTape() as tape:
+            y_pred = self.model(batch_x, training=True)
+            loss = loss_fn(batch_y, y_pred)
+        grads = tape.gradient(loss, self.model.trainable_variables)
+
+        # Intervall, fundera över detta.
+        min_lr = self.lr  # 1e-6
+        max_lr = 1e-2
+
+        # Uppdatering av LR
+        error = float(y_true - y_pred)
+        adj_lr = self.lr * (1 + abs(error)*2.0)
+        adj_lr = max(min_lr, min(adj_lr, max_lr))
+        self.optimizer.learning_rate.assign(adj_lr)
+
+        # Uppdatering av MSE-gradienten
+        self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
+        return loss.numpy()
+
 
     def save_model(self, path: str = "./files/onlinemodel.keras"):
         self.model.save(path)
