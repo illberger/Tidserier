@@ -27,8 +27,9 @@ class BinanceWebSocketClient:
         self.logger = logging.getLogger(__name__)
         self.closed_candles = {}
         self.partial_ctr = defaultdict(int)
-        self.scalers = scalers # joblib scaler for each grouping in training
-        self.LIMIT_CANDLES_STORAGE = 1000
+        self.scalers = scalers # minmax scaler for each grouping in training
+        self.subscribed_symbols = set()
+        self.LIMIT_CANDLES_STORAGE = 300
         self.hist_client = SpotWebsocketAPIClient(
             on_message=self.hist_msg_handler,
             on_close=self.has_closed()
@@ -38,6 +39,9 @@ class BinanceWebSocketClient:
             on_message=self._on_message,
             is_combined=True,
         )
+
+    def is_streaming(self, symbol: str) -> bool:
+        return symbol.upper() in self.subscribed_symbols
 
     def _on_message(self, _, raw: str):
         """
@@ -179,6 +183,7 @@ class BinanceWebSocketClient:
         for symbol in symbols:
             self.client.kline(symbol.lower(), interval=interval)
             self.logger.info(f"Subscribed to {symbol} @ {interval} klines.")
+            self.subscribed_symbols.add(symbol.upper())
 
     def get_latest_sequence(self, symbol: str, seq_len=288):
         """
@@ -191,13 +196,15 @@ class BinanceWebSocketClient:
         rows = self.closed_candles.get(symbol.upper(), [])[-seq_len:]
         if len(rows) < seq_len:
             return None, None
-        x = np.array([self.candle_to_row(k) for k in rows], dtype=np.float32)
+        x_raw = np.array([self.candle_to_row(k) for k in rows], dtype=np.float32)
         scaler: MinMaxScaler = self.scalers.get(symbol.upper())
         if scaler is None:
             return None, None  # symbol som inte fanns vid träning
-        x_scaled = scaler.transform(x)  # shape (seq_len, 6)
+        x_scaled = scaler.transform(x_raw)  # shape (seq_len, 6)
 
-        return x_scaled, scaler, x
+        last_open_time = rows[-1]['t']
+
+        return x_scaled, scaler, x_raw, last_open_time
 
 
 

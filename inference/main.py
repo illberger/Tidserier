@@ -2,45 +2,88 @@
 
 import logging
 import asyncio
+import threading
+import time
+
 import joblib
 from binance_client import BinanceWebSocketClient
 from model_manager import ModelManager, load_model
 logging.basicConfig(level=logging.INFO)
+
+predictions = {}
+true_records = []
+"""
+TODO::: TA in error pct in i update gradients.
+"""
+
+def subscribe_and_predict(ws_client, model_mng, symbol):
+    symbol = symbol.upper()
+
+    if not ws_client.is_streaming(symbol):
+        ws_client.fetch_historical_5m_candles(symbol)
+        ws_client.subscribe_to_klines([symbol], interval="5m")
+
+    if symbol in predictions:
+        print(f"{symbol} already has a prediction pending (ts={predictions[symbol][0]})")
+        return
+
+    def do_initial_predict():
+        seq_scaled, scaler, seq_raw, last_open_ts = ws_client.get_latest_sequence(symbol, seq_len=288)
+        if seq_scaled is None or not seq_scaled.any():
+            print(f"{symbol} needs 288 candles before we can predict.")
+            return
+
+        pct, pred_close = model_mng.predict_close(seq_scaled, seq_raw)
+        predictions[symbol] = (last_open_ts, pred_close)
+        print(f"{symbol} → next_close={pred_close}, percent_change={pct}")
+
+    t = threading.Timer(2.0, do_initial_predict)
+    t.daemon = True
+    t.start()
+
+
+def monitor_predictions(ws_client, model_mng):
+    while True:
+        time.sleep(10)
+        for symbol, (pred_open_ts, pred_close) in list(predictions.items()):
+            res = ws_client.get_latest_sequence(symbol, seq_len=288)
+            if not res or res[0] is None:
+                continue
+            _, _, x_raw, last_open_time = res
+            if last_open_time > pred_open_ts:
+
+                true_close = float(x_raw[-1, 3])  # 3 är index för close price
+                error = true_close - pred_close
+                true_records.append((symbol, pred_open_ts, true_close, error))
+                del predictions[symbol]
+                print(f"[True arrived] {symbol}@{pred_open_ts} → actual {true_close:.4f}, error {error:.4f}")
+                subscribe_and_predict(ws_client, model_mng, symbol)
 
 
 async def menu_loop(ws_client, model, model_mng):
     """
     A simple command-line menu to trigger predictions.
     """
+
+    threading.Thread(
+        target=monitor_predictions,
+        args=(ws_client, model_mng),
+        daemon=True
+    ).start()
+
     while True:
         print("\n--- Menu ---")
-        print("1) Subscribe to kline data for a symbol")
-        print("2) Get the latest prediction for a symbol")
-        print("3) Save updated online-learning LSTM")
-        print("Q) Quit")
+        print("1. Stream via WS and start predict loop.")
+        print("2. Save updated online-learning LSTM")
+        print("Q. Quit")
 
         choice = input("Choose an option: ").strip().upper()
 
         if choice == "1":
-            symbols_input = input("Enter symbol(s), e.g. BTCUSDT ETHUSDT: ").strip().upper()
-            symbols_list = symbols_input.split()
-            for s in symbols_list:
-                ws_client.fetch_historical_5m_candles(s)
-            ws_client.subscribe_to_klines(symbols_list, interval="5m")
+            symbol_input = input("Enter symbol, e.g. 'BTCUSDT': ").strip().upper()
+            subscribe_and_predict(ws_client, model_mng, symbol_input)
 
         elif choice == "2":
-            symbol = input("Enter symbol for prediction (e.g. BTCUSDT): ").strip().upper()
-            sequence_scaled, sc, sequence_raw = ws_client.get_latest_sequence(symbol)
-            if sequence_scaled is not None and sc is not None:
-                if sequence_scaled.any():
-                    pct_change, next_close = model_mng.predict_close(sequence_scaled, sequence_raw)
-                    print(f"Prediction for {symbol}: {next_close}")
-                    print(f"% change for {symbol}: {pct_change}")
-                else:
-                    print(f"Not enough data for {symbol}. Have {len(ws_client.latest_candles.get(symbol, []))} candles stored.")
-            else:
-                print(f"No Klines or scaling data for {symbol}")
-        elif choice == "3":
             print("Saving model...")
             try:
                 model_mng.save_model()

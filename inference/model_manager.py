@@ -61,9 +61,9 @@ class ModelManager:
         self.last_X_unscaled = X_unscaled.copy()
 
         inp = X_scaled.reshape((1, X_scaled.shape[0], N_FEATURES))
-        y_pct_hat = self.model.predict(inp, verbose=0).reshape(-1)
+        y_pct_hat: float = self.model.predict(inp, verbose=0).reshape(-1)
         last_close = X_unscaled[-1, CLOSE_IDX]
-        pred_close = last_close * (1 + y_pct_hat[0])
+        pred_close: float = last_close * (1 + y_pct_hat[0])
         return y_pct_hat, pred_close
 
     def save_model(self, path: str = "./files/onlinemodel.keras"):
