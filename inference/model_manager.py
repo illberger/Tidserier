@@ -85,11 +85,12 @@ class ModelManager:
         :return: Loss for this batch (for statistics or further computing)
         """
 
-        self.replay.append((X_batch, y_true))
-        batch_x = np.vstack([xb for xb, _ in self.replay])  # shape (k, seq_len, n_feat)
-        batch_y = np.vstack([yt for _, yt in self.replay])  # shape (k, 1)
+        self.replay.append((X_batch.squeeze(0), y_true.squeeze(0)))
 
-        loss_fn = tf.keras.losses.MeanSquaredError()
+        batch_x = np.stack([xb for xb, _ in self.replay], axis=0)
+        batch_y = np.stack([yt for _, yt in self.replay], axis=0)
+
+        loss_fn = tf.keras.losses.Huber()
         with tf.GradientTape() as tape:
             y_pred = self.model(batch_x, training=True)
             loss = loss_fn(batch_y, y_pred)
@@ -100,12 +101,14 @@ class ModelManager:
         max_lr = 1e-2
 
         # Uppdatering av LR
-        error = float(y_true - y_pred)
+        # skalär
+        last_err = batch_y[-1] - y_pred[-1, 0]  # y_pred är (k,1)
+        error = float(last_err)
         adj_lr = self.lr * (1 + abs(error)*2.0)
         adj_lr = max(min_lr, min(adj_lr, max_lr))
         self.optimizer.learning_rate.assign(adj_lr)
 
-        # Uppdatering av MSE-gradienten
+        # Uppdatering av gradienten
         self.optimizer.apply_gradients(zip(grads, self.model.trainable_variables))
         return loss.numpy()
 

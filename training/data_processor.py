@@ -49,18 +49,6 @@ class DataProcessor:
             sin_t   = np.sin(2*np.pi * minutes / (24*60))
             cos_t   = np.cos(2*np.pi * minutes / (24*60))
 
-            """Ignore this
-            Testing time-signals
-            test_string = "BTCUST"
-            if symbol == test_string:
-                plt.plot(np.array(sin_t)[:288], label='sin')
-                plt.plot(np.array(cos_t)[:288], label='cos')
-                plt.xlabel('Minutes [5]')
-                plt.title('Time of day signal')
-                plt.legend()
-                plt.show()
-            """
-
             vals = g[features].astype(float).values  # (N,4)
             time_ft = np.vstack([sin_t, cos_t]).T  # (N,2)
             X_full = np.hstack([vals, time_ft])  # (N,6)

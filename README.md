@@ -21,7 +21,10 @@ av dessa grupperingar.
 
 Om man endast vill prova göra prediktioner, 
 så behöver man endast <code>pip install binance-connector</code>
-för själva websocket-strömmen, där valfri IDE borde kunna sköta installationen av resterande moduler (jag använder PYCHARM community edition) <br><br>Om du vill träna en ny modell behöver du sätta upp en databastabell enligt schemat i <code>training/db_fetcher</code>, samt <code>pip install python-binance</code>. I detta fall, kör först <code>fetching</code>, och sedan <code>training</code>.
+för själva websocket-strömmen, där valfri IDE borde kunna sköta installationen av resterande moduler (jag använder PYCHARM community edition) <br><br>
+Om du vill träna en ny modell behöver du sätta upp en databastabell enligt schemat i <code>training/db_fetcher</code>, samt <code>pip install python-binance</code>, <code>pip install keras-tuner</code> (eller <code>pip install bayesian-optimization</code>). I detta fall, kör först <code>fetching</code>, och sedan <code>training</code>.
+
+Jag har <u>inte</u> lagt upp någon <code>requirements.txt</code> eller dylikt, så man får manuellt gå igenom beroenden (vilket inte är så farligt, är mest tensorflow och numpy)
 
 
 ###

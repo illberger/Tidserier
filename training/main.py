@@ -1,23 +1,30 @@
 # main.py
 
-import gc
-import numpy as np
-import tensorflow as tf
-
 import matplotlib.pyplot as plt
-from sklearn.utils import shuffle
-from sklearn.utils.class_weight import compute_class_weight
-from sklearn.preprocessing import StandardScaler
-from sklearn.preprocessing import MinMaxScaler
 from db_fetcher import DBFetcher
 from data_processor import DataProcessor
 from tensorflow import keras
+from bayes_opt import BayesianOptimization
+from tensorflow.keras.optimizers import Adam
+import keras_tuner as kt
 import joblib
 
-from datetime import datetime
 
 feature_names = ['OpenPrice', 'HighPrice', 'LowPrice', 'ClosePrice', 'TimeSin', 'TimeCos']
+sequence_length = 288
+label_width = 1
 
+
+class BayTuner(kt.BayesianOptimization):
+    """
+    Subclass for bayesian tuning
+    """
+    def run_trial(self, trial, *args, **kwargs):
+        bs = trial.hyperparameters.get('batch_size')
+        kwargs['batch_size'] = bs
+        return super().run_trial(trial,
+                                 *args,
+                                 **kwargs)
 
 def plot_feature_violins(X):
     """
@@ -35,33 +42,61 @@ def plot_feature_violins(X):
     plt.show()
 
 
-def build_lstm_model(seq_len, num_features, label_width):
-    inputs = keras.Input((seq_len, num_features))
-    x = keras.layers.LSTM(32,
-                          return_sequences=True,
-                          dropout=0.2,
-                          recurrent_dropout=0.2
-                          )(inputs)
-    x = keras.layers.LSTM(32,
-                          dropout=0.2,
-                          recurrent_dropout=0.2
-                          )(x)
-    outputs = keras.layers.Dense(label_width, activation='linear')(x)
-    if label_width > 1:
-        outputs = keras.layers.Reshape((label_width, 1))(outputs)
-    return keras.Model(inputs, outputs)
+def build_model(hp):
+    """
+    Defines model architecture and hp-span (lr and batch-size)
+    Loss = huber
+    Explicit initialization of weights
+    :param hp:
+    :return:
+    """
+    inp = keras.Input((sequence_length, len(feature_names)))
+
+    x = keras.layers.LSTM(
+        128,
+        return_sequences=True,
+        kernel_initializer='orthogonal',
+        recurrent_initializer='orthogonal',
+        kernel_regularizer=keras.regularizers.l2(1e-4),
+        recurrent_regularizer=keras.regularizers.l2(1e-4),
+        dropout=0.2,
+        recurrent_dropout=0.1
+    )(inp)
+    x = keras.layers.LayerNormalization()(x)
+    x = keras.layers.LSTM(64, dropout=0.2)(x)
+    x = keras.layers.LayerNormalization()(x)
+    x = keras.layers.Dense(32, activation='relu',
+                           kernel_regularizer=keras.regularizers.l2(1e-4))(x)
+    x = keras.layers.Dropout(0.2)(x)
+    out = keras.layers.Dense(label_width, activation='linear')(x)
+
+    model = keras.Model(inp, out)
+
+    lr = hp.Float('learning_rate',
+                  min_value=1e-5,
+                  max_value=1e-2,
+                  sampling='log')
+    hp.Choice('batch_size',
+                   values=[32, 64, 128, 256, 512])
+
+    model.compile(
+        optimizer=Adam(learning_rate=lr),
+        loss='huber',
+        metrics=['mae']
+    )
+    return model
 
 
 def main():
     # 288 = 1 dag/25 H
-    sequence_length = 288 # " N - SeqLen". Hur många candles modellen ska titta på i inputfönstret.
+    # sequence length är nu global var
     train_ratio     = 0.7
     val_ratio       = 0.15
     # 1 feature = closePrice
-    label_width = 1 # Antal tiddsteg att förutse;
+    # label width är nu global var
     patience = 3 # Patience för early stopping (training)
     epochs = 50 # max epochs
-    batch_size = 128 # Batcher att ta igenom varje träningsteg
+    model = None  # placeholder
 
     df = DBFetcher().fetch_candles()
     proc = DataProcessor(sequence_length, label_width)
@@ -76,10 +111,17 @@ def main():
                                                    mode='min',
                                                    restore_best_weights=True)
 
-    model = build_lstm_model(sequence_length, len(feature_names), label_width)
-    model.compile(optimizer='adam', loss='huber', metrics=['mae'])
+    tuner = BayTuner(
+        build_model,
+        objective='val_loss',
+        max_trials=10,
+        num_initial_points=5,
+        seed=42,
+        directory='bay_tuner',
+        project_name='lstm_may2025'
+    )
     while True:
-        _input = input("Model compiled, choose\n 1: Plot normalised data distributions\n2. Train NEW model\n3. Save model to file\n")
+        _input = input("Choose\n 1: Plot normalised data distributions\n2. Train NEW model(hp search)\n3. Save model to file\n")
         match _input:
             case "1":
                 n_features = x_test.shape[2]
@@ -93,15 +135,38 @@ def main():
                 plt.tight_layout()
                 plt.show()
             case "2":
+
+                tuner.search(
+                    x_train, y_train,
+                    validation_data=(x_val, y_val),
+                    epochs=3,
+                    callbacks=[early_stopping],
+                    verbose=1
+                )
+                # 8896 steps för denna batch_size 32. Vad är nästa?
+                best_hp = tuner.get_best_hyperparameters(1)[0]
+                best_lr = best_hp.get('learning_rate')
+                best_bs = best_hp.get('batch_size')
+                print("Bästa lr:", best_lr)
+                print("Bästa batch_size:", best_bs)
+
+                model = tuner.get_best_models(1)[0]
+                model.compile(optimizer=Adam(learning_rate=best_lr), loss='huber', metrics=['mae'])
+
                 model.fit(
                     x_train, y_train,
                     validation_data=(x_val, y_val),
                     epochs=epochs,
-                    batch_size=batch_size,
+                    batch_size=best_bs,
                     callbacks=[early_stopping]
                 )
+
+                # Fryser första lagret innan export
+                first_lstm = model.layers[1]
+                first_lstm.trainable = False
+                model.compile(optimizer=Adam(learning_rate=best_lr), loss='huber', metrics=['mae'])
                 loss, mae = model.evaluate(x_test, y_test)
-                print(f"Test MSE: {loss:.4f}, Test MAE: {mae:.4f}")
+                print(f"Test: {loss:.4f}, Test MAE: {mae:.4f}")
             case "3":
                 if model is None:
                     print("No current model to save. Please train a model first.")
