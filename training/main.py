@@ -47,6 +47,9 @@ def build_model(hp):
     Defines model architecture and hp-span (lr and batch-size)
     Loss = huber
     Explicit initialization of weights
+
+    TODO: Implement varierbar tidsaxel, för att bättre prediktera realtid.
+    inp = keras.Input(shape=(None, num_features))
     :param hp:
     :return:
     """
@@ -72,19 +75,29 @@ def build_model(hp):
 
     model = keras.Model(inp, out)
 
-    lr = hp.Float('learning_rate',
+    if hp is None:
+        lr = 1e-4
+        model.compile(
+            optimizer=Adam(learning_rate=lr),
+            loss='huber',
+            metrics=['mae']
+        )
+        return model
+    else:
+
+        lr = hp.Float('learning_rate',
                   min_value=1e-5,
                   max_value=1e-2,
                   sampling='log')
-    hp.Choice('batch_size',
-                   values=[32, 64, 128, 256, 512])
+        hp.Choice('batch_size',
+                   values=[32, 64, 128, 256, 512]) # 64 är en OK batch_Size för detta
 
-    model.compile(
-        optimizer=Adam(learning_rate=lr),
-        loss='huber',
-        metrics=['mae']
-    )
-    return model
+        model.compile(
+            optimizer=Adam(learning_rate=lr),
+            loss='huber',
+            metrics=['mae']
+        )
+        return model
 
 
 def main():
@@ -135,7 +148,7 @@ def main():
                 plt.tight_layout()
                 plt.show()
             case "2":
-
+                """
                 tuner.search(
                     x_train, y_train,
                     validation_data=(x_val, y_val),
@@ -167,6 +180,17 @@ def main():
                 model.compile(optimizer=Adam(learning_rate=best_lr), loss='huber', metrics=['mae'])
                 loss, mae = model.evaluate(x_test, y_test)
                 print(f"Test: {loss:.4f}, Test MAE: {mae:.4f}")
+                """
+                model = build_model(hp=None)
+                model.compile(optimizer=Adam(learning_rate=1e-4), loss='huber', metrics=['mae'])
+
+                model.fit(
+                    x_train, y_train,
+                    validation_data=(x_val, y_val),
+                    epochs=epochs,
+                    batch_size=64,
+                    callbacks=[early_stopping]
+                )
             case "3":
                 if model is None:
                     print("No current model to save. Please train a model first.")

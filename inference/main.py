@@ -33,7 +33,7 @@ def subscribe_and_predict(ws_client, model_mng, symbol):
             print(f"{symbol} needs 288 candles before we can predict.")
             return
 
-        pct, pred_close = model_mng.predict_close(seq_scaled, seq_raw)
+        pct, pred_close = model_mng.predict_close(symbol, seq_scaled, seq_raw)
         predictions[symbol] = (last_open_ts, pred_close)
         print(f"{symbol} → next_close={pred_close}, percent_change={pct}")
 
