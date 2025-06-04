@@ -201,7 +201,7 @@ async def menu_loop(ws_client, model, model_mng):
     of 1 for each candlestick (first 288 candles are never predicted, since these are the initial sequence input)
     """
 
-    monitor_predictions(ws_client, model_mng, "BTCUSDC", 30)  # Change args here <---
+    monitor_predictions(ws_client, model_mng, "BTCUSDC", 365)  # Change args here <---
 
 
 
