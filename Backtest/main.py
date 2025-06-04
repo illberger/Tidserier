@@ -70,7 +70,7 @@ def monitor_predictions(ws_client, model_mng, symbol, max_days):
 
     Slice_shift iterates 288 times for each iteration of fetch_shift. It is used to actually shift the time
     window t through each Sequences of Sequences. The value of slice_shift determines what actual candlestick (5 minute
-    price bar) the model is predicting at each timestep.
+    price bar) the model is predicting at each timestep. A.k.a. the time step.
     :param ws_client:
     :param model_mng:
     :param symbol:
