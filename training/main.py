@@ -1,45 +1,50 @@
-# main.py
+# /training/main.py
 
 import matplotlib.pyplot as plt
 from db_fetcher import DBFetcher
-from data_processor import DataProcessor
 from tensorflow import keras
-from bayes_opt import BayesianOptimization
+import tensorflow as tf
 from tensorflow.keras.optimizers import Adam
-import keras_tuner as kt
-import joblib
+from data_processor import preprocess_window
+import pandas as pd
+import numpy as np
+"""
+Polymarket Tags:
+
+    Politics
+    Crypto
+    Sports
+    Middle East
+    Pop Culture
+    Business
+    Science
+    All
+"""
 
 
-feature_names = ['OpenPrice', 'HighPrice', 'LowPrice', 'ClosePrice', 'TimeSin', 'TimeCos']
+
+
+#<editor-fold desc="Globala konstanter">
+feature_names = ['OpenPrice', 'HighPrice', 'LowPrice', 'ClosePrice', 'Volume', 'TimeSin', 'TimeCos']
 sequence_length = 288
 label_width = 1
+loss = 'mse'
+metrics = ['mae']
+BATCH_SIZE = 512
+LR = 1e-2
+model = None
+#</editor-fold>
 
-
+"""
 class BayTuner(kt.BayesianOptimization):
-    """
-    Subclass for bayesian tuning
-    """
+    
     def run_trial(self, trial, *args, **kwargs):
         bs = trial.hyperparameters.get('batch_size')
         kwargs['batch_size'] = bs
         return super().run_trial(trial,
                                  *args,
                                  **kwargs)
-
-def plot_feature_violins(X):
-    """
-    Creates a violin plot for each feature by flattening over all samples and timesteps.
-    """
-    n_features = X.shape[2]
-    data = [X[:, :, i].flatten() for i in range(n_features)]
-
-    plt.figure(figsize=(12, 6))
-    plt.violinplot(data, showmeans=True)
-    plt.xticks(range(1, n_features + 1), feature_names, rotation=45)
-    plt.title("Violin Plots of Test Set Features")
-    plt.ylabel("Scaled Feature Value")
-    plt.tight_layout()
-    plt.show()
+"""
 
 
 def build_model(hp):
@@ -48,7 +53,7 @@ def build_model(hp):
     Loss = huber
     Explicit initialization of weights
 
-    TODO: Implement varierbar tidsaxel, för att bättre prediktera realtid.
+    TODO: Implementera varierbar tidsaxel
     inp = keras.Input(shape=(None, num_features))
     :param hp:
     :return:
@@ -56,33 +61,35 @@ def build_model(hp):
     inp = keras.Input((sequence_length, len(feature_names)))
 
     x = keras.layers.LSTM(
-        128,
+        32,
         return_sequences=True,
-        kernel_initializer='orthogonal',
-        recurrent_initializer='orthogonal',
-        kernel_regularizer=keras.regularizers.l2(1e-4),
-        recurrent_regularizer=keras.regularizers.l2(1e-4),
-        dropout=0.2,
-        recurrent_dropout=0.1
+        #kernel_initializer='orthogonal',
+        #recurrent_initializer='orthogonal'
+        #kernel_regularizer=keras.regularizers.l2(1e-4),
+        #recurrent_regularizer=keras.regularizers.l2(1e-4),
+        #dropout=0.2,
+        #recurrent_dropout=0.1
     )(inp)
-    x = keras.layers.LayerNormalization()(x)
-    x = keras.layers.LSTM(64, dropout=0.2)(x)
-    x = keras.layers.LayerNormalization()(x)
-    x = keras.layers.Dense(32, activation='relu',
-                           kernel_regularizer=keras.regularizers.l2(1e-4))(x)
-    x = keras.layers.Dropout(0.2)(x)
+    #x = keras.layers.LayerNormalization()(x)
+    x = keras.layers.LSTM(32)(x)
+    #x = keras.layers.LayerNormalization()(x)
+    #x = keras.layers.Dense(32, activation='relu',
+    #                       kernel_regularizer=keras.regularizers.l2(1e-4))(x)
+    #x = keras.layers.Dropout(0.2)(x)
     out = keras.layers.Dense(label_width, activation='linear')(x)
 
-    model = keras.Model(inp, out)
+    cmodel = keras.Model(inp, out)
+    cmodel.compile(optimizer=Adam(learning_rate=LR), loss=loss, metrics=metrics)
 
     if hp is None:
-        lr = 1e-4
-        model.compile(
+        lr = 1e-3
+        cmodel.compile(
             optimizer=Adam(learning_rate=lr),
             loss='huber',
             metrics=['mae']
         )
-        return model
+        return cmodel
+    # <editor-fold desc="Kompilering vid Bayesian Tuner från keras paketet (används ej, gammalt exempel)">
     else:
 
         lr = hp.Float('learning_rate',
@@ -90,113 +97,125 @@ def build_model(hp):
                   max_value=1e-2,
                   sampling='log')
         hp.Choice('batch_size',
-                   values=[32, 64, 128, 256, 512]) # 64 är en OK batch_Size för detta
+                   values=[32, 64, 128, 256, 512])
 
-        model.compile(
+        cmodel.compile(
             optimizer=Adam(learning_rate=lr),
             loss='huber',
             metrics=['mae']
         )
-        return model
+        return cmodel
+    # </editor-fold>
 
+
+def pack_row(sym, ot, op, hi, lo, cl, vol):
+    vec = tf.stack([tf.cast(ot, tf.float32), op, hi, lo, cl, vol], axis=0)
+    vec.set_shape([6])          # <-- statisk form
+    return vec
 
 def main():
-    # 288 = 1 dag/25 H
-    # sequence length är nu global var
-    train_ratio     = 0.7
-    val_ratio       = 0.15
-    # 1 feature = closePrice
-    # label width är nu global var
-    patience = 3 # Patience för early stopping (training)
-    epochs = 50 # max epochs
-    model = None  # placeholder
+    #<editor-fold desc="Inita tuner (gammalt exempel)">
 
-    df = DBFetcher().fetch_candles()
-    proc = DataProcessor(sequence_length, label_width)
-    df_train, df_val, df_test = proc.split_by_time(df, train_ratio, val_ratio)
 
-    x_train, y_train = proc.create_sequences(df_train)
-    x_val,   y_val   = proc.create_sequences(df_val)
-    x_test,  y_test  = proc.create_sequences(df_test)
 
-    early_stopping = keras.callbacks.EarlyStopping(monitor='val_loss',
-                                                   patience=patience,
-                                                   mode='min',
-                                                   restore_best_weights=True)
 
-    tuner = BayTuner(
-        build_model,
-        objective='val_loss',
-        max_trials=10,
-        num_initial_points=5,
-        seed=42,
-        directory='bay_tuner',
-        project_name='lstm_may2025'
-    )
+    print("TF:", tf.__version__, " NumPy:", np.__version__)
+    print("GPUs:", tf.config.list_physical_devices('GPU'))
     while True:
-        _input = input("Choose\n 1: Plot normalised data distributions\n2. Train NEW model(hp search)\n3. Save model to file\n")
+        _input = input("Choose\n 1: Plot normalised data distributions(OBSOLETE)\n2. Train NEW model\n3. Save model to file\n")
         match _input:
             case "1":
-                n_features = x_test.shape[2]
-                data = [x_test[:, :, i].flatten() for i in range(n_features)]
+                print("Funktionen har tagits bort")
+                #<editor-fold desc="Violin plottning">
 
-                plt.figure(figsize=(12, 6))
-                plt.violinplot(data, showmeans=True)
-                plt.xticks(range(1, n_features + 1), feature_names, rotation=45)
-                plt.title("Violin Plots of Test Set Features")
-                plt.ylabel("Scaled Feature Value")
-                plt.tight_layout()
-                plt.show()
+                #</editor-fold>
             case "2":
-                """
-                tuner.search(
-                    x_train, y_train,
-                    validation_data=(x_val, y_val),
-                    epochs=3,
-                    callbacks=[early_stopping],
-                    verbose=1
-                )
-                # 8896 steps för denna batch_size 32. Vad är nästa?
-                best_hp = tuner.get_best_hyperparameters(1)[0]
-                best_lr = best_hp.get('learning_rate')
-                best_bs = best_hp.get('batch_size')
-                print("Bästa lr:", best_lr)
-                print("Bästa batch_size:", best_bs)
+                #<editor-fold desc="Bayesian Tuning Pipeline, Tidigare Exempel">
 
-                model = tuner.get_best_models(1)[0]
-                model.compile(optimizer=Adam(learning_rate=best_lr), loss='huber', metrics=['mae'])
+                #</editor-fold>
 
-                model.fit(
-                    x_train, y_train,
-                    validation_data=(x_val, y_val),
-                    epochs=epochs,
-                    batch_size=best_bs,
-                    callbacks=[early_stopping]
+                # <editor-fold desc="Streaming from DB and model-fitting">
+                model = build_model(hp=None) # Compiled model, 32 units LSTM
+
+                fetcher = DBFetcher()
+
+                total_rows = fetcher.row_count()
+                total_sequences = total_rows - (sequence_length + label_width) + 1
+                train_size = int(total_sequences * 0.6)
+                val_size = int(total_sequences * 0.2)
+                test_size = total_sequences - train_size - val_size
+
+                full_ds = (
+                    fetcher.get_dataset()
+                    .map(pack_row, num_parallel_calls=tf.data.AUTOTUNE)
+                    .window(sequence_length + label_width, shift=1, drop_remainder=True)
+                    .flat_map(lambda w: w.batch(sequence_length + label_width))
+                    .map(preprocess_window, num_parallel_calls=tf.data.AUTOTUNE)
                 )
 
-                # Fryser första lagret innan export
-                first_lstm = model.layers[1]
-                first_lstm.trainable = False
-                model.compile(optimizer=Adam(learning_rate=best_lr), loss='huber', metrics=['mae'])
-                loss, mae = model.evaluate(x_test, y_test)
-                print(f"Test: {loss:.4f}, Test MAE: {mae:.4f}")
-                """
-                model = build_model(hp=None)
-                model.compile(optimizer=Adam(learning_rate=1e-4), loss='huber', metrics=['mae'])
-
-                model.fit(
-                    x_train, y_train,
-                    validation_data=(x_val, y_val),
-                    epochs=epochs,
-                    batch_size=64,
-                    callbacks=[early_stopping]
+                gap = sequence_length + label_width - 1
+                train_ds = (
+                    full_ds
+                    .take(train_size)
+                    .shuffle(8641)  # Each SymbolPair is Grouped and sorted by the fetching code in groups of 8641 (doesn't mean that we have to shuffle by this number, but whatever)
+                    .batch(BATCH_SIZE)
+                    .prefetch(tf.data.AUTOTUNE)
                 )
+
+                val_ds = (
+                    full_ds
+                    .skip(train_size + gap)
+                    .take(val_size)
+                    .batch(BATCH_SIZE)
+                    .prefetch(tf.data.AUTOTUNE)
+                )
+
+                test_ds = (
+                    full_ds
+                    .skip(train_size + gap + val_size + gap)
+                    .take(test_size)
+                    .batch(BATCH_SIZE, drop_remainder=True)
+                    .prefetch(tf.data.AUTOTUNE)
+                )
+
+                history = model.fit(
+                    train_ds,
+                    validation_data=val_ds,
+                    epochs=100,
+                    callbacks=[keras.callbacks.EarlyStopping(monitor="val_loss",
+                                                           patience=3,
+                                                             verbose=1,
+                                                             restore_best_weights=True)]
+                )
+
+                mse_metric = tf.keras.metrics.MeanSquaredError()
+                mae_metric = tf.keras.metrics.MeanAbsoluteError()
+                for X_batch, y_batch in test_ds:
+                    naive_preds = tf.expand_dims(X_batch[:, -1, 3], axis=1)
+                    mse_metric.update_state(y_batch, naive_preds)
+                    mae_metric.update_state(y_batch, naive_preds)
+
+                baseline_mse_all = mse_metric.result().numpy()
+                baseline_mae_all = mae_metric.result().numpy()
+                print(f"Naiv baseline (hela test_ds) ‒ MSE: {baseline_mse_all:.5f}, MAE: {baseline_mae_all:.5f}")
+
+                results = model.evaluate(test_ds)
+                print("Test loss & metrics:", results)
+                hist_df = pd.DataFrame(history.history)
+
+                hist_df[['loss', 'val_loss']].plot(figsize=(8, 5))
+
+                plt.title("Training vs Validation Loss")
+                plt.xlabel("Epoch")
+                plt.ylabel("Loss")
+                plt.legend(["Train", "Val"])
+                plt.show()
+                # </editor-fold>
             case "3":
                 if model is None:
                     print("No current model to save. Please train a model first.")
                 else:
                     filename = "../inference/files/model.keras"
-                    joblib.dump(proc.scalers, '../inference/files/symbol_scalers.joblib')
                     model.save(filename)
                     print(f"Model saved to {filename}")
                     print(f"Scalers saved to symbol_scalers.joblib")

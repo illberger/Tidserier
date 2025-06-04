@@ -1,74 +1,52 @@
 # data_processor.py
 import numpy as np
-import pandas as pd
-from sklearn.preprocessing import MinMaxScaler
-import matplotlib.pyplot as plt
+import tensorflow as tf
+"""
+Tensorflow v2.10.1
+Numpy v1.23.5
+"""
 
 
-class DataProcessor:
-    def __init__(self, sequence_length, label_width=1):
-        self.sequence_length = sequence_length
-        self.label_width = label_width
-        self.scalers = {}
+def preprocess_window(window):
+    """
+    "Förbehandlingsfönstret". Returnerar två st tensorflow-tensorer
+    Data is already cleaned inside database in report example (removed SymbolPairs insufficient data using T-SQL)
+    :param window:
+    :return:
+    """
 
-    def split_by_time(self, df, train_ratio, val_ratio):
-        symbols = df['Symbol'].unique()
-        n         = len(symbols)
-        train_end = int(n * train_ratio)
-        val_end   = int(n * (train_ratio + val_ratio))
+    # Om man vill verifiera varje fönster/sekvens så kan man köra printsatsen nedan.
+    #tf.print("preprocess_window körs på fönster med shape:", tf.shape(window))
+    vals_all = window[:, 1:6]
+    opentime = tf.cast(window[:, 0], tf.int64)
+    minutes  = tf.cast((opentime // 60000) % (24*60), tf.float32)
+    sin_t    = tf.sin(2*np.pi*minutes/(24*60))
+    cos_t    = tf.cos(2*np.pi*minutes/(24*60))
+    time_ft  = tf.stack([sin_t, cos_t], axis=1)
 
-        train_syms = symbols[:train_end]
-        val_syms   = symbols[train_end:val_end]
-        test_syms  = symbols[val_end:]
+    X_full = tf.concat([vals_all, time_ft], axis=1)
 
-        def subdf(syms):
-            return (df[df['Symbol'].isin(syms)]
-                    .sort_values(['Symbol','OpenTime'])
-                    .reset_index(drop=True))
+    mean, var = tf.nn.moments(X_full, axes=[0])
+    std       = tf.sqrt(var + 1e-6)
+    X_scaled_full = (X_full - mean) / std
 
-        return subdf(train_syms), subdf(val_syms), subdf(test_syms)
+    unseen_close_price = X_scaled_full[-1, 3] # Z-Score Normalised Label Target
 
-    def create_sequences(self, df):
-        all_X = []
-        all_y = []
-        features = ['OpenPrice','HighPrice','LowPrice','ClosePrice']
+    # Raw closes
+    unseen_close_price_raw = X_full[-1, 3]
+    last_seen_close_price_raw = X_full[-2, 3]
 
-        """
-        Olika symboler, olika normaliseringar.
-        Sparar parametrarna för vardera MinMaxScaler i en dictionary, som sedan sparas till en fil.
-        """
-        for symbol, group in df.groupby('Symbol'):
-            g = group.sort_values('OpenTime').reset_index(drop=True)
-            close_raw = g['ClosePrice'].astype(float).values
-            pct = np.empty_like(close_raw)
-            pct[:-1] = close_raw[1:] / close_raw[:-1] -1
-            pct[-1] = np.nan
+    # Pct_change Label Target as %
+    pct_change = ((unseen_close_price_raw - last_seen_close_price_raw) / last_seen_close_price_raw) * 100.0
 
-            dt      = pd.to_datetime(g['OpenTime'], unit='ms', utc=True)
-            minutes = dt.dt.hour * 60 + dt.dt.minute
-            sin_t   = np.sin(2*np.pi * minutes / (24*60))
-            cos_t   = np.cos(2*np.pi * minutes / (24*60))
+    # Pct_change Label Target as factor
+    pct_change_factor = ((unseen_close_price_raw - last_seen_close_price_raw) / last_seen_close_price_raw)
 
-            vals = g[features].astype(float).values  # (N,4)
-            time_ft = np.vstack([sin_t, cos_t]).T  # (N,2)
-            X_full = np.hstack([vals, time_ft])  # (N,6)
+    label = unseen_close_price
 
-            scaler   = MinMaxScaler()
-            X_scaled = scaler.fit_transform(X_full)
-            self.scalers[symbol] = scaler # save scaler
+    X_scaled = X_scaled_full[:-1, :]
 
-            N = len(X_scaled)
-            for i in range(N - self.sequence_length - self.label_width + 1):
-                seq_x = X_scaled[i: i + self.sequence_length]  # (L,6)
-                # första target är pct vid index i+L-1
-                start = i + self.sequence_length - 1
-                seq_y = pct[start: start + self.label_width]  # (W,)
+    return X_scaled, tf.expand_dims(label, 0)
 
-                if np.isnan(seq_y).any():
-                    continue
 
-                all_X.append(seq_x.astype(np.float32))
-                all_y.append(seq_y.astype(np.float32))
-
-        return np.array(all_X), np.array(all_y)
 

@@ -29,7 +29,7 @@ def get_db_connection():
 def ms_to_datetime_str(ms):
     """
     4. Convert TransactTime to datetime for Binance
-    # If your DB times are in ms, that's perfect for Binance
+
     :param ms:
     :return:
     """
@@ -118,23 +118,46 @@ def fetch_all_symbols(client):
 
 def main():
 
-    client = Client(api_key="", api_secret="")
+    """
+    Ingen autentisering krävs för detta, men det kan eventuellt vara så att man har högre
+    begränsningar om man använder ett binance konto med en API-nyckel (jag vet dock inte säkert).
+    :return:
+    """
+    client = Client(api_key="",
+                    api_secret="")
 
     symbols = fetch_all_symbols(client)
 
-    base_start_unix = 1746396000000
+    """
+    Avser perioden Apr 0 1 2025 00:00:00 (GMT +02:00) - Maj 1 2025
+    Jag orkade inte koda skiten själv, men man kan enkelt dubbelkolla sin ts här: https://currentmillis.com/
+    """
+    base_start_unix = 1743458400000
     day_ms = 86400000
-    import random
+    #import random
 
-    random_days = random.randint(1, 5)
-    end_time = base_start_unix + random_days * day_ms
+    """
+    Tanken här var att köra slumpmässiga perioder på olika grupperingar av symboler i själva datat, men det är bara onödigt.
+    (Modellen ska ju inte prediktera hela marknaden i sig själv, utan korta mönster inom en dag som uttrycks var 5e minut).
+    """
+    days = 30
+    test1 = (days * 288)
+    test2 = (days * 288) +1
+    end_time = base_start_unix + days * day_ms
 
+
+    """
+    Skön progress statistik
+    """
     for idx, symbol in enumerate(symbols, 1):
         try:
             klines = fetch_candlesticks_from_binance(client, symbol, base_start_unix, end_time)
             if klines:
-                insert_candlesticks_into_db(symbol, "5m", klines)
-                print(f"[{idx}/{len(symbols)}] Inserted {len(klines)} klines for {symbol}")
+                if len(klines) == test1 or len(klines) == test2:
+                    insert_candlesticks_into_db(symbol, "5m", klines)
+                    print(f"[{idx}/{len(symbols)}] Inserted {len(klines)} klines for {symbol}")
+                else:
+                    print(f"Incomplete data for {symbol}, only {len(klines)} klines when we need {test1}")
             else:
                 print(f"[{idx}/{len(symbols)}] No data for {symbol} in this period.")
         except Exception as e:
